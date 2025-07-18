@@ -16,7 +16,7 @@ def create_combinations_with_stable_svd(data, comb, preprocessing='standardize',
     Parameters:
     -----------
     data : pandas.DataFrame
-        Input dataframe
+        Input dataframe (candidate function library)
     comb : int
         Number of terms in each combination
     preprocessing : str
@@ -108,7 +108,7 @@ def filter_combinations(combination_results_processed,combination_results_origin
     return filtered_results, dropped_results
 
 
-def regression(filtered_results,model,degree,test_size=0.2,n_jobs=-1,fit_with_intercept=False,**model_params):
+def regression(filtered_results,model,degree,test_size=0.2,n_jobs=-1,fit_with_intercept=True,**model_params):
     """
     Run regression(linear/Lasso/Ridge) for each combination and calculate R^2 and MSE.
 
@@ -208,6 +208,7 @@ def regression(filtered_results,model,degree,test_size=0.2,n_jobs=-1,fit_with_in
             if abs(res['inter']) > 1e-10:
                 eq_parts.append(f"{'+ ' if res['inter']>=0 else ''}{res['inter']:.4f}")
             equation = f"{res['target_name']} = " + " ".join(eq_parts) if eq_parts else f"{res['target_name']} = 0"
+            print("Equation saved:", equation)
 
             regression_results[key] = {
                 'polynomial_degree': degree,
@@ -222,14 +223,64 @@ def regression(filtered_results,model,degree,test_size=0.2,n_jobs=-1,fit_with_in
 
 
 def process_single_degree(poly_degree,candidate_libs,comb=3):
-    combination_result = create_combinations_with_stable_svd(
-        candidate_libs[poly_degree], comb=comb, preprocessing='None'
+    """
+    Run the full multicollinearity‑detection pipeline for a single polynomial degree.
+
+    Workflow for the specified `poly_degree`:
+        1. Create combinations of `comb` terms and compute their SVD on both
+           the **processed** (scaled) and **original** feature matrices using
+           :func:`create_combinations_with_stable_svd`.
+        2. Filter the combinations according to the supplied condition
+           number `threshold` via :func:`filter_combinations` (only those that
+           exceed the threshold are kept).
+        3. Run linear regressions on every retained combination with
+           :func:`regression` to obtain an interpretable multicollinearity
+           relationship and its test set metrics.
+
+    Parameters
+    ----------
+    poly_degree : int
+        Current polynomial degree being processed (key into ``candidate_libs``).
+    candidate_libs : dict[int, pandas.DataFrame]
+        Mapping of *degree → candidate library* returned by the polynomial feature generator.
+    comb : int, default 3
+        Number of terms to include in each linear dependency combination.
+
+    Returns
+    -------
+    dict
+        A dictionary with four top level keys, all indexed by the integer
+        combination ID produced inside :func:`create_combinations_with_stable_svd`.
+
+        * ``'combination'`` : dict[int, dict]
+            The original (unscaled) combination metadata as returned by
+            :func:`create_combinations_with_stable_svd` (singular values, SVD
+            condition number, etc.).
+        * ``'filtered'`` : dict[int, dict]
+            Subset of ``'combination'`` that **exceeded** the condition number
+            threshold and were therefore retained for regression analysis.
+        * ``'dropped'`` : dict[int, dict]
+            Complement of ``'filtered'`` combinations whose condition number
+            was below the threshold and were discarded.
+        * ``'regression'`` : dict[int, dict]
+            Best regression result for each retained combination.  Each value
+            contains keys ``'equation'``, ``'r2_test'``, ``'mse_test'``,
+            ``'condition_number'``, etc.
+
+    Notes
+    -----
+    The function is designed to be executed in parallel for every degree in
+    ``degree_range`` via :pyclass:`multiprocessing.Pool`.  Any exception raised
+    inside will be propagated back to the parent process.
+    """
+    combination_result_processed,combination_result_original = create_combinations_with_stable_svd(
+        candidate_libs[poly_degree], comb=comb, preprocessing='standardize'
     )
-    filtered_result, dropped_result = filter_combinations(combination_result)
+    filtered_result, dropped_result = filter_combinations(combination_result_processed,combination_result_original)
     regression_result = regression(filtered_result,model='linear',degree=poly_degree)
 
     return {
-        'combination': combination_result,
+        'combination': combination_result_original,
         'filtered': filtered_result,
         'dropped': dropped_result,
         'regression': regression_result
